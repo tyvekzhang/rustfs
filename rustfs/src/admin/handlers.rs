@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// 导入必要的模块和依赖
 use super::router::Operation;
 use crate::admin::auth::validate_admin_request;
 use crate::auth::check_key_valid;
@@ -72,8 +73,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::debug;
 use tracing::{error, info, warn};
 use url::Host;
-// use url::UrlQuery;
 
+// 导入子模块
 pub mod bucket_meta;
 pub mod event;
 pub mod group;
@@ -90,23 +91,25 @@ pub mod tier;
 pub mod trace;
 pub mod user;
 
+/// 管理员状态响应结构体
 #[derive(Debug, Serialize)]
 pub struct IsAdminResponse {
-    pub is_admin: bool,
-    pub access_key: String,
-    pub message: String,
+    pub is_admin: bool,           // 是否是管理员
+    pub access_key: String,       // 访问密钥
+    pub message: String,          // 状态消息
 }
 
+/// 账户信息结构体
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "PascalCase", default)]
+#[serde(rename_all = "PascalCase", default)]  // JSON字段名使用PascalCase格式
 pub struct AccountInfo {
-    pub account_name: String,
-    pub server: rustfs_madmin::BackendInfo,
-    pub policy: BucketPolicy,
+    pub account_name: String,     // 账户名称
+    pub server: rustfs_madmin::BackendInfo,  // 后端服务器信息
+    pub policy: BucketPolicy,     // 存储桶策略
 }
 
-/// Health check handler for endpoint monitoring
+/// 健康检查处理器
 pub struct HealthCheckHandler {}
 
 #[async_trait::async_trait]
@@ -114,12 +117,12 @@ impl Operation for HealthCheckHandler {
     async fn call(&self, req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
         use serde_json::json;
 
-        // Extract the original HTTP Method (encapsulated by s3s into S3Request)
+        // 提取原始的HTTP方法（被s3s封装到S3Request中）
         let method = req.method;
 
-        // Only GET and HEAD are allowed
+        // 只允许GET和HEAD方法
         if method != http::Method::GET && method != http::Method::HEAD {
-            // 405 Method Not Allowed
+            // 405 方法不允许
             let mut headers = HeaderMap::new();
             headers.insert(http::header::ALLOW, HeaderValue::from_static("GET, HEAD"));
             return Ok(S3Response::with_headers(
@@ -128,6 +131,7 @@ impl Operation for HealthCheckHandler {
             ));
         }
 
+        // 构建健康检查信息
         let health_info = json!({
             "status": "ok",
             "service": "rustfs-endpoint",
@@ -139,11 +143,11 @@ impl Operation for HealthCheckHandler {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         if method == http::Method::HEAD {
-            // HEAD: only returns the header and status code, not the body
+            // HEAD方法：只返回头部和状态码，不返回响应体
             return Ok(S3Response::with_headers((StatusCode::OK, Body::empty()), headers));
         }
 
-        // GET: Return JSON body normally
+        // GET方法：正常返回JSON响应体
         let body_str = serde_json::to_string(&health_info).unwrap_or_else(|_| "{}".to_string());
         let body = Body::from(body_str);
 
@@ -151,20 +155,24 @@ impl Operation for HealthCheckHandler {
     }
 }
 
+/// 管理员状态检查处理器
 pub struct IsAdminHandler {}
+
 #[async_trait::async_trait]
 impl Operation for IsAdminHandler {
     async fn call(&self, req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
+        // 从请求中获取凭证信息
         let Some(input_cred) = req.credentials else {
             return Err(s3_error!(InvalidRequest, "get cred failed"));
         };
 
+        // 验证访问密钥的有效性
         let (cred, _owner) =
             check_key_valid(get_session_token(&req.uri, &req.headers).unwrap_or_default(), &input_cred.access_key).await?;
 
         let access_key_to_check = input_cred.access_key.clone();
 
-        // Check if the user is admin by comparing with global credentials
+        // 通过比较全局凭证来检查用户是否是管理员
         let is_admin = if let Some(sys_cred) = get_global_action_cred() {
             crate::auth::constant_time_eq(&access_key_to_check, &sys_cred.access_key)
                 || crate::auth::constant_time_eq(&cred.parent_user, &sys_cred.access_key)
@@ -172,12 +180,14 @@ impl Operation for IsAdminHandler {
             false
         };
 
+        // 构建响应
         let response = IsAdminResponse {
             is_admin,
             access_key: access_key_to_check,
             message: format!("User is {}an administrator", if is_admin { "" } else { "not " }),
         };
 
+        // 序列化响应数据
         let data = serde_json::to_vec(&response)
             .map_err(|_e| S3Error::with_message(S3ErrorCode::InternalError, "parse IsAdminResponse failed"))?;
 
@@ -188,21 +198,27 @@ impl Operation for IsAdminHandler {
     }
 }
 
+/// 账户信息处理器
 pub struct AccountInfoHandler {}
+
 #[async_trait::async_trait]
 impl Operation for AccountInfoHandler {
     async fn call(&self, req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
+        // 获取对象存储层
         let Some(store) = new_object_layer_fn() else {
             return Err(S3Error::with_message(S3ErrorCode::InternalError, "Not init".to_string()));
         };
 
+        // 获取凭证信息
         let Some(input_cred) = req.credentials else {
             return Err(s3_error!(InvalidRequest, "get cred failed"));
         };
 
+        // 验证密钥有效性
         let (cred, owner) =
             check_key_valid(get_session_token(&req.uri, &req.headers).unwrap_or_default(), &input_cred.access_key).await?;
 
+        // 获取IAM存储
         let Ok(iam_store) = rustfs_iam::get() else {
             return Err(s3_error!(InvalidRequest, "iam not init"));
         };
@@ -210,11 +226,13 @@ impl Operation for AccountInfoHandler {
         let default_claims = HashMap::new();
         let claims = cred.claims.as_ref().unwrap_or(&default_claims);
 
+        // 获取条件值用于策略评估
         let cred_clone = cred.clone();
         let conditions = get_condition_values(&req.headers, &cred_clone, None, None);
         let cred_clone = Arc::new(cred_clone);
         let conditions = Arc::new(conditions);
 
+        // 创建检查权限的闭包
         let is_allow = Box::new({
             let iam_clone = Arc::clone(&iam_store);
             let cred_clone = Arc::clone(&cred_clone);
@@ -225,6 +243,8 @@ impl Operation for AccountInfoHandler {
                 let conditions = Arc::clone(&conditions);
                 async move {
                     let (mut rd, mut wr) = (false, false);
+                    
+                    // 检查ListBucket权限
                     if !iam_clone
                         .is_allowed(&Args {
                             account: &cred_clone.access_key,
@@ -242,6 +262,7 @@ impl Operation for AccountInfoHandler {
                         rd = true
                     }
 
+                    // 检查GetBucketLocation权限
                     if !iam_clone
                         .is_allowed(&Args {
                             account: &cred_clone.access_key,
@@ -259,6 +280,7 @@ impl Operation for AccountInfoHandler {
                         rd = true
                     }
 
+                    // 检查PutObject权限
                     if !iam_clone
                         .is_allowed(&Args {
                             account: &cred_clone.access_key,
@@ -281,12 +303,14 @@ impl Operation for AccountInfoHandler {
             }
         });
 
+        // 确定账户名称
         let account_name = if cred.is_temp() || cred.is_service_account() {
             cred.parent_user.clone()
         } else {
             cred.access_key.clone()
         };
 
+        // 构建参数用于从声明中获取角色ARN
         let claims_args = Args {
             account: "",
             groups: &None,
@@ -301,8 +325,7 @@ impl Operation for AccountInfoHandler {
 
         let role_arn = claims_args.get_role_arn();
 
-        // TODO: get_policies_from_claims(claims);
-
+        // 获取全局管理员凭证
         let Some(admin_cred) = get_global_action_cred() else {
             return Err(S3Error::with_message(
                 S3ErrorCode::InternalError,
@@ -312,7 +335,9 @@ impl Operation for AccountInfoHandler {
 
         let mut effective_policy: rustfs_policy::policy::Policy = Default::default();
 
+        // 根据账户类型确定有效策略
         if account_name == admin_cred.access_key {
+            // 管理员使用consoleAdmin策略
             for (name, p) in DEFAULT_POLICIES.iter() {
                 if *name == "consoleAdmin" {
                     effective_policy = p.clone();
@@ -320,6 +345,7 @@ impl Operation for AccountInfoHandler {
                 }
             }
         } else if let Some(arn) = role_arn {
+            // 角色账户使用角色策略
             let (_, policy_name) = iam_store
                 .get_role_policy(arn)
                 .await
@@ -328,6 +354,7 @@ impl Operation for AccountInfoHandler {
             let policies = MappedPolicy::new(&policy_name).to_slice();
             effective_policy = iam_store.get_combined_policy(&policies).await;
         } else {
+            // 普通账户使用分配的权限策略
             let policies = iam_store
                 .policy_db_get(&account_name, &cred.groups)
                 .await
@@ -336,9 +363,11 @@ impl Operation for AccountInfoHandler {
             effective_policy = iam_store.get_combined_policy(&policies).await;
         };
 
+        // 序列化策略
         let policy_str = serde_json::to_string(&effective_policy)
             .map_err(|_e| S3Error::with_message(S3ErrorCode::InternalError, "parse policy failed"))?;
 
+        // 构建账户信息
         let mut account_info = rustfs_madmin::AccountInfo {
             account_name,
             server: store.backend_info().await,
@@ -346,7 +375,7 @@ impl Operation for AccountInfoHandler {
             ..Default::default()
         };
 
-        // TODO: bucket policy
+        // 获取存储桶列表并检查访问权限
         let buckets = store
             .list_bucket(&BucketOptions {
                 cached: true,
@@ -358,8 +387,7 @@ impl Operation for AccountInfoHandler {
         for bucket in buckets.iter() {
             let (rd, wr) = is_allow(bucket.name.clone()).await;
             if rd || wr {
-                // TODO: BucketQuotaSys
-                // TODO: other attributes
+                // 有访问权限的存储桶添加到账户信息中
                 account_info.buckets.push(rustfs_madmin::BucketAccessInfo {
                     name: bucket.name.clone(),
                     details: Some(rustfs_madmin::BucketDetails {
@@ -374,6 +402,7 @@ impl Operation for AccountInfoHandler {
             }
         }
 
+        // 序列化账户信息
         let data = serde_json::to_vec(&account_info)
             .map_err(|_e| S3Error::with_message(S3ErrorCode::InternalError, "parse accountInfo failed"))?;
 
@@ -384,7 +413,9 @@ impl Operation for AccountInfoHandler {
     }
 }
 
+/// 服务处理器（未实现）
 pub struct ServiceHandle {}
+
 #[async_trait::async_trait]
 impl Operation for ServiceHandle {
     async fn call(&self, _req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
@@ -394,11 +425,13 @@ impl Operation for ServiceHandle {
     }
 }
 
+/// 服务器信息处理器
 pub struct ServerInfoHandler {}
 
 #[async_trait::async_trait]
 impl Operation for ServerInfoHandler {
     async fn call(&self, req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
+        // 验证凭证
         let Some(input_cred) = req.credentials else {
             return Err(s3_error!(InvalidRequest, "get cred failed"));
         };
@@ -406,6 +439,7 @@ impl Operation for ServerInfoHandler {
         let (cred, owner) =
             check_key_valid(get_session_token(&req.uri, &req.headers).unwrap_or_default(), &input_cred.access_key).await?;
 
+        // 验证管理员权限
         validate_admin_request(
             &req.headers,
             &cred,
@@ -415,6 +449,7 @@ impl Operation for ServerInfoHandler {
         )
         .await?;
 
+        // 获取服务器信息
         let info = get_server_info(true).await;
 
         let data = serde_json::to_vec(&info)
@@ -427,6 +462,7 @@ impl Operation for ServerInfoHandler {
     }
 }
 
+/// 数据检查处理器（未实现）
 pub struct InspectDataHandler {}
 
 #[async_trait::async_trait]
@@ -438,6 +474,7 @@ impl Operation for InspectDataHandler {
     }
 }
 
+/// 存储信息处理器
 pub struct StorageInfoHandler {}
 
 #[async_trait::async_trait]
@@ -452,6 +489,7 @@ impl Operation for StorageInfoHandler {
         let (cred, owner) =
             check_key_valid(get_session_token(&req.uri, &req.headers).unwrap_or_default(), &input_cred.access_key).await?;
 
+        // 验证管理员权限
         validate_admin_request(
             &req.headers,
             &cred,
@@ -465,8 +503,7 @@ impl Operation for StorageInfoHandler {
             return Err(S3Error::with_message(S3ErrorCode::InternalError, "Not init".to_string()));
         };
 
-        // TODO:getAggregatedBackgroundHealState
-
+        // 获取存储信息
         let info = store.storage_info().await;
 
         let data = serde_json::to_vec(&info)
@@ -479,6 +516,7 @@ impl Operation for StorageInfoHandler {
     }
 }
 
+/// 数据使用信息处理器
 pub struct DataUsageInfoHandler {}
 
 #[async_trait::async_trait]
@@ -493,6 +531,7 @@ impl Operation for DataUsageInfoHandler {
         let (cred, owner) =
             check_key_valid(get_session_token(&req.uri, &req.headers).unwrap_or_default(), &input_cred.access_key).await?;
 
+        // 验证管理员权限
         validate_admin_request(
             &req.headers,
             &cred,
@@ -509,10 +548,12 @@ impl Operation for DataUsageInfoHandler {
             return Err(S3Error::with_message(S3ErrorCode::InternalError, "Not init".to_string()));
         };
 
+        // 聚合本地快照获取数据使用信息
         let (disk_statuses, mut info) = match aggregate_local_snapshots(store.clone()).await {
             Ok((statuses, usage)) => (statuses, usage),
             Err(err) => {
                 warn!("aggregate_local_snapshots failed: {:?}", err);
+                // 从后端加载数据使用信息
                 (
                     Vec::new(),
                     load_data_usage_from_backend(store.clone()).await.map_err(|e| {
@@ -523,6 +564,7 @@ impl Operation for DataUsageInfoHandler {
             }
         };
 
+        // 检查是否有快照可用
         let snapshots_available = disk_statuses.iter().any(|status| status.snapshot_exists);
         if !snapshots_available {
             if let Ok(fallback) = load_data_usage_from_backend(store.clone()).await {
@@ -534,12 +576,14 @@ impl Operation for DataUsageInfoHandler {
             info.disk_usage_status = disk_statuses.clone();
         }
 
+        // 检查数据是否过时
         let last_update_age = info.last_update.and_then(|ts| ts.elapsed().ok());
         let data_missing = info.objects_total_count == 0 && info.buckets_count == 0;
         let stale = last_update_age
             .map(|elapsed| elapsed > std::time::Duration::from_secs(300))
             .unwrap_or(true);
 
+        // 数据缺失时进行实时收集
         if data_missing {
             info!("No data usage statistics found, attempting real-time collection");
 
@@ -549,6 +593,7 @@ impl Operation for DataUsageInfoHandler {
                 warn!("Failed to persist refreshed data usage: {}", e);
             }
         } else if stale {
+            // 数据过时，异步刷新
             info!(
                 "Data usage statistics are stale (last update {:?} ago), refreshing asynchronously",
                 last_update_age
@@ -570,7 +615,7 @@ impl Operation for DataUsageInfoHandler {
 
         info.disk_usage_status = disk_statuses;
 
-        // Set capacity information
+        // 设置容量信息
         let sinfo = store.storage_info().await;
         info.total_capacity = get_total_usable_capacity(&sinfo.disks, &sinfo) as u64;
         info.total_free_capacity = get_total_usable_capacity_free(&sinfo.disks, &sinfo) as u64;
@@ -588,22 +633,23 @@ impl Operation for DataUsageInfoHandler {
     }
 }
 
+/// 指标参数结构体
 #[derive(Debug, Serialize, Deserialize)]
 struct MetricsParams {
-    disks: String,
-    hosts: String,
+    disks: String,            // 磁盘列表
+    hosts: String,           // 主机列表
     #[serde(rename = "interval")]
-    tick: String,
-    n: u64,
-    types: u32,
+    tick: String,            // 收集间隔
+    n: u64,                  // 收集次数
+    types: u32,              // 指标类型
     #[serde(rename = "by-disk")]
-    by_disk: String,
+    by_disk: String,         // 按磁盘分组
     #[serde(rename = "by-host")]
-    by_host: String,
+    by_host: String,         // 按主机分组
     #[serde(rename = "by-jobID")]
-    by_job_id: String,
+    by_job_id: String,       // 按任务ID分组
     #[serde(rename = "by-depID")]
-    by_dep_id: String,
+    by_dep_id: String,       // 按部门ID分组
 }
 
 impl Default for MetricsParams {
@@ -622,6 +668,7 @@ impl Default for MetricsParams {
     }
 }
 
+/// 从URI中提取指标参数
 fn extract_metrics_init_params(uri: &Uri) -> MetricsParams {
     let mut mp = MetricsParams::default();
     if let Some(query) = uri.query() {
@@ -680,8 +727,9 @@ fn extract_metrics_init_params(uri: &Uri) -> MetricsParams {
     mp
 }
 
+/// 指标流结构体
 struct MetricsStream {
-    inner: ReceiverStream<Result<Bytes, StdError>>,
+    inner: ReceiverStream<Result<Bytes, StdError>>,  // 接收器流
 }
 
 impl Stream for MetricsStream {
@@ -696,6 +744,7 @@ impl Stream for MetricsStream {
 
 impl ByteStream for MetricsStream {}
 
+/// 指标处理器
 pub struct MetricsHandler {}
 
 #[async_trait::async_trait]
@@ -705,9 +754,11 @@ impl Operation for MetricsHandler {
         let Some(cred) = req.credentials else { return Err(s3_error!(InvalidRequest, "get cred failed")) };
         info!("cred: {:?}", cred);
 
+        // 提取指标参数
         let mp = extract_metrics_init_params(&req.uri);
         info!("mp: {:?}", mp);
 
+        // 解析间隔时间
         let tick = parse_duration(&mp.tick).unwrap_or_else(|_| std_Duration::from_secs(3));
 
         let mut n = mp.n;
@@ -715,12 +766,14 @@ impl Operation for MetricsHandler {
             n = u64::MAX;
         }
 
+        // 设置指标类型
         let types = if mp.types != 0 {
             MetricType::new(mp.types)
         } else {
             MetricType::ALL
         };
 
+        // 解析逗号分隔的字符串为集合
         fn parse_comma_separated(s: &str) -> HashSet<String> {
             s.split(',').filter(|part| !part.is_empty()).map(String::from).collect()
         }
@@ -737,17 +790,22 @@ impl Operation for MetricsHandler {
         let d_id = mp.by_dep_id;
         let mut interval = interval(tick);
 
+        // 构建指标收集选项
         let opts = CollectMetricsOpts {
             hosts: host_map,
             disks: disk_map,
             job_id,
             dep_id: d_id,
         };
+        
+        // 创建通道用于流式传输指标数据
         let (tx, rx) = mpsc::channel(10);
         let in_stream: DynByteStream = Box::pin(MetricsStream {
             inner: ReceiverStream::new(rx),
         });
         let body = Body::from(in_stream);
+        
+        // 启动异步任务收集指标
         spawn(async move {
             while n > 0 {
                 info!("loop, n: {n}");
@@ -755,6 +813,7 @@ impl Operation for MetricsHandler {
                 let m_local = collect_local_metrics(types, &opts).await;
                 m.merge(m_local);
 
+                // 根据选项过滤数据
                 if !by_host {
                     m.by_host = HashMap::new();
                 }
@@ -764,7 +823,7 @@ impl Operation for MetricsHandler {
 
                 m.finally = n <= 1;
 
-                // todo write resp
+                // 序列化并发送指标数据
                 match serde_json::to_vec(&m) {
                     Ok(re) => {
                         info!("got metrics, send it to client, m: {m:?}");
@@ -781,6 +840,7 @@ impl Operation for MetricsHandler {
                     break;
                 }
 
+                // 等待下一个收集间隔或通道关闭
                 select! {
                     _ = tx.closed() => { return; }
                     _ = interval.tick() => {}
@@ -792,22 +852,26 @@ impl Operation for MetricsHandler {
     }
 }
 
+/// 修复初始化参数结构体
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct HealInitParams {
-    bucket: String,
-    obj_prefix: String,
-    hs: HealOpts,
-    client_token: String,
-    force_start: bool,
-    force_stop: bool,
+    bucket: String,          // 存储桶名称
+    obj_prefix: String,      // 对象前缀
+    hs: HealOpts,            // 修复选项
+    client_token: String,    // 客户端令牌
+    force_start: bool,       // 强制开始
+    force_stop: bool,        // 强制停止
 }
 
+/// 提取修复初始化参数
 fn extract_heal_init_params(body: &Bytes, uri: &Uri, params: Params<'_, '_>) -> S3Result<HealInitParams> {
     let mut hip = HealInitParams {
         bucket: params.get("bucket").map(|s| s.to_string()).unwrap_or_default(),
         obj_prefix: params.get("prefix").map(|s| s.to_string()).unwrap_or_default(),
         ..Default::default()
     };
+    
+    // 验证参数有效性
     if hip.bucket.is_empty() && !hip.obj_prefix.is_empty() {
         return Err(s3_error!(InvalidRequest, "invalid bucket name"));
     }
@@ -818,6 +882,7 @@ fn extract_heal_init_params(body: &Bytes, uri: &Uri, params: Params<'_, '_>) -> 
         return Err(s3_error!(InvalidRequest, "invalid object name"));
     }
 
+    // 从查询参数中提取其他参数
     if let Some(query) = uri.query() {
         let params: Vec<&str> = query.split('&').collect();
         for param in params {
@@ -838,10 +903,12 @@ fn extract_heal_init_params(body: &Bytes, uri: &Uri, params: Params<'_, '_>) -> 
         }
     }
 
+    // 验证参数组合的有效性
     if (hip.force_start && hip.force_stop) || (!hip.client_token.is_empty() && (hip.force_start || hip.force_stop)) {
         return Err(s3_error!(InvalidRequest, ""));
     }
 
+    // 如果客户端令牌为空，从请求体中解析修复选项
     if hip.client_token.is_empty() {
         hip.hs = serde_json::from_slice(body).map_err(|e| {
             info!("err request body parse, err: {:?}", e);
@@ -852,6 +919,7 @@ fn extract_heal_init_params(body: &Bytes, uri: &Uri, params: Params<'_, '_>) -> 
     Ok(hip)
 }
 
+/// 修复处理器
 pub struct HealHandler {}
 
 #[async_trait::async_trait]
@@ -860,6 +928,8 @@ impl Operation for HealHandler {
         warn!("handle HealHandler, req: {:?}, params: {:?}", req, params);
         let Some(cred) = req.credentials else { return Err(s3_error!(InvalidRequest, "get cred failed")) };
         info!("cred: {:?}", cred);
+        
+        // 读取请求体
         let mut input = req.input;
         let bytes = match input.store_all_limited(MAX_HEAL_REQUEST_SIZE).await {
             Ok(b) => b,
@@ -869,28 +939,33 @@ impl Operation for HealHandler {
             }
         };
         info!("bytes: {:?}", bytes);
+        
+        // 提取修复参数
         let hip = extract_heal_init_params(&bytes, &req.uri, params)?;
         info!("body: {:?}", hip);
 
+        /// 修复响应结构体
         #[derive(Default)]
         struct HealResp {
-            resp_bytes: Vec<u8>,
-            _api_err: Option<StorageError>,
-            _err_body: String,
+            resp_bytes: Vec<u8>,          // 响应字节
+            _api_err: Option<StorageError>, // API错误
+            _err_body: String,            // 错误消息
         }
 
+        // 构建修复路径
         let heal_path = path_join(&[PathBuf::from(hip.bucket.clone()), PathBuf::from(hip.obj_prefix.clone())]);
         let (tx, mut rx) = mpsc::channel(1);
 
+        // 根据操作类型执行不同的修复操作
         if !hip.client_token.is_empty() && !hip.force_start && !hip.force_stop {
-            // Query heal status
+            // 查询修复状态
             let tx_clone = tx.clone();
             let heal_path_str = heal_path.to_str().unwrap_or_default().to_string();
             let client_token = hip.client_token.clone();
             spawn(async move {
                 match rustfs_common::heal_channel::query_heal_status(heal_path_str, client_token).await {
                     Ok(_) => {
-                        // TODO: Get actual response from channel
+                        // TODO: 从通道获取实际响应
                         let _ = tx_clone
                             .send(HealResp {
                                 resp_bytes: vec![],
@@ -909,13 +984,13 @@ impl Operation for HealHandler {
                 }
             });
         } else if hip.force_stop {
-            // Cancel heal task
+            // 取消修复任务
             let tx_clone = tx.clone();
             let heal_path_str = heal_path.to_str().unwrap_or_default().to_string();
             spawn(async move {
                 match rustfs_common::heal_channel::cancel_heal_task(heal_path_str).await {
                     Ok(_) => {
-                        // TODO: Get actual response from channel
+                        // TODO: 从通道获取实际响应
                         let _ = tx_clone
                             .send(HealResp {
                                 resp_bytes: vec![],
@@ -934,10 +1009,10 @@ impl Operation for HealHandler {
                 }
             });
         } else if hip.client_token.is_empty() {
-            // Use new heal channel mechanism
+            // 使用新的修复通道机制
             let tx_clone = tx.clone();
             spawn(async move {
-                // Create heal request through channel
+                // 通过通道创建修复请求
                 let heal_request = rustfs_common::heal_channel::create_heal_request(
                     hip.bucket.clone(),
                     if hip.obj_prefix.is_empty() {
@@ -951,7 +1026,7 @@ impl Operation for HealHandler {
 
                 match rustfs_common::heal_channel::send_heal_request(heal_request).await {
                     Ok(_) => {
-                        // Success - send empty response for now
+                        // 成功 - 发送空响应
                         let _ = tx_clone
                             .send(HealResp {
                                 resp_bytes: vec![],
@@ -960,7 +1035,7 @@ impl Operation for HealHandler {
                             .await;
                     }
                     Err(e) => {
-                        // Error - send error response
+                        // 错误 - 发送错误响应
                         let _ = tx_clone
                             .send(HealResp {
                                 _api_err: Some(StorageError::other(e)),
@@ -972,6 +1047,7 @@ impl Operation for HealHandler {
             });
         }
 
+        // 等待修复结果
         match rx.recv().await {
             Some(result) => Ok(S3Response::new((StatusCode::OK, Body::from(result.resp_bytes)))),
             None => Ok(S3Response::new((StatusCode::INTERNAL_SERVER_ERROR, Body::from(vec![])))),
@@ -979,6 +1055,7 @@ impl Operation for HealHandler {
     }
 }
 
+/// 后台修复状态处理器（未实现）
 pub struct BackgroundHealStatusHandler {}
 
 #[async_trait::async_trait]
@@ -990,6 +1067,7 @@ impl Operation for BackgroundHealStatusHandler {
     }
 }
 
+/// 从URI中提取查询参数
 fn extract_query_params(uri: &Uri) -> HashMap<String, String> {
     let mut params = HashMap::new();
 
@@ -1005,12 +1083,15 @@ fn extract_query_params(uri: &Uri) -> HashMap<String, String> {
 }
 
 #[allow(dead_code)]
+/// 检查是否本地主机（未实现）
 fn is_local_host(_host: String) -> bool {
     false
 }
 
-//awscurl --service s3 --region us-east-1 --access_key rustfsadmin --secret_key rustfsadmin "http://:9000/rustfs/admin/v3/replicationmetrics?bucket=1"
+/// 获取复制指标处理器
+// awscurl --service s3 --region us-east-1 --access_key rustfsadmin --secret_key rustfsadmin "http://:9000/rustfs/admin/v3/replicationmetrics?bucket=1"
 pub struct GetReplicationMetricsHandler {}
+
 #[async_trait::async_trait]
 impl Operation for GetReplicationMetricsHandler {
     async fn call(&self, _req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
@@ -1019,13 +1100,14 @@ impl Operation for GetReplicationMetricsHandler {
         if let Some(bucket) = queries.get("bucket") {
             error!("get bucket:{} metrics", bucket);
         }
-        //return Err(s3_error!(InvalidArgument, "Invalid bucket name"));
-        //Ok(S3Response::with_headers((StatusCode::OK, Body::from()), header))
+        // TODO: 实现复制指标获取逻辑
         Ok(S3Response::new((StatusCode::OK, Body::from("Ok".to_string()))))
     }
 }
 
+/// 设置远程目标处理器
 pub struct SetRemoteTargetHandler {}
+
 #[async_trait::async_trait]
 impl Operation for SetRemoteTargetHandler {
     async fn call(&self, req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
@@ -1047,11 +1129,13 @@ impl Operation for SetRemoteTargetHandler {
             return Err(S3Error::with_message(S3ErrorCode::InternalError, "Not init".to_string()));
         };
 
+        // 验证存储桶存在
         store
             .get_bucket_info(bucket, &BucketOptions::default())
             .await
             .map_err(ApiError::from)?;
 
+        // 读取请求体
         let mut input = req.input;
         let body = match input.store_all_limited(MAX_ADMIN_REQUEST_BODY_SIZE).await {
             Ok(b) => b,
@@ -1061,15 +1145,18 @@ impl Operation for SetRemoteTargetHandler {
             }
         };
 
+        // 解析远程目标配置
         let mut remote_target: BucketTarget = serde_json::from_slice(&body).map_err(|e| {
             error!("Failed to parse BucketTarget from body: {}", e);
             ApiError::other(e)
         })?;
 
+        // 验证目标URL
         let Ok(target_url) = remote_target.url() else {
             return Err(S3Error::with_message(S3ErrorCode::InternalError, "Invalid target url".to_string()));
         };
 
+        // 检查是否为本地目标
         let same_target = rustfs_utils::net::is_local_host(
             target_url.host().unwrap_or(Host::Domain("localhost")),
             target_url.port().unwrap_or(80),
@@ -1085,6 +1172,7 @@ impl Operation for SetRemoteTargetHandler {
 
         let bucket_target_sys = BucketTargetSys::get();
 
+        // 如果不是更新操作，检查是否已存在
         if !update {
             let (arn, exist) = bucket_target_sys.get_remote_arn(bucket, Some(&remote_target), "").await;
             remote_target.arn = arn.clone();
@@ -1100,6 +1188,7 @@ impl Operation for SetRemoteTargetHandler {
             return Err(S3Error::with_message(S3ErrorCode::InternalError, "ARN is empty".to_string()));
         }
 
+        // 更新操作：获取现有目标并更新
         if update {
             let Some(mut target) = bucket_target_sys
                 .get_remote_bucket_target_by_arn(bucket, &remote_target.arn)
@@ -1108,6 +1197,7 @@ impl Operation for SetRemoteTargetHandler {
                 return Err(S3Error::with_message(S3ErrorCode::InternalError, "Target not found".to_string()));
             };
 
+            // 更新目标配置
             target.credentials = remote_target.credentials;
             target.endpoint = remote_target.endpoint;
             target.secure = remote_target.secure;
@@ -1124,11 +1214,13 @@ impl Operation for SetRemoteTargetHandler {
 
         let arn = remote_target.arn.clone();
 
+        // 设置目标
         bucket_target_sys
             .set_target(bucket, &remote_target, update)
             .await
             .map_err(|e| S3Error::with_message(S3ErrorCode::InternalError, e.to_string()))?;
 
+        // 更新存储桶元数据
         let targets = bucket_target_sys.list_bucket_targets(bucket).await.map_err(|e| {
             error!("Failed to list bucket targets: {}", e);
             S3Error::with_message(S3ErrorCode::InternalError, "Failed to list bucket targets".to_string())
@@ -1151,7 +1243,9 @@ impl Operation for SetRemoteTargetHandler {
     }
 }
 
+/// 列出远程目标处理器
 pub struct ListRemoteTargetHandler {}
+
 #[async_trait::async_trait]
 impl Operation for ListRemoteTargetHandler {
     async fn call(&self, req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
@@ -1161,6 +1255,7 @@ impl Operation for ListRemoteTargetHandler {
             return Err(s3_error!(InvalidRequest, "get cred failed"));
         };
 
+        // 如果指定了存储桶，列出该存储桶的远程目标
         if let Some(bucket) = queries.get("bucket") {
             if bucket.is_empty() {
                 error!("bucket parameter is empty");
@@ -1174,6 +1269,7 @@ impl Operation for ListRemoteTargetHandler {
                 return Err(S3Error::with_message(S3ErrorCode::InternalError, "Not initialized".to_string()));
             };
 
+            // 验证存储桶存在
             if let Err(err) = store.get_bucket_info(bucket, &BucketOptions::default()).await {
                 error!("Error fetching bucket info: {:?}", err);
                 return Ok(S3Response::new((StatusCode::BAD_REQUEST, Body::from("Invalid bucket".to_string()))));
@@ -1193,6 +1289,7 @@ impl Operation for ListRemoteTargetHandler {
             return Ok(S3Response::with_headers((StatusCode::OK, Body::from(json_targets)), header));
         }
 
+        // 未指定存储桶，返回空列表
         let targets: Vec<BucketTarget> = Vec::new();
 
         let json_targets = serde_json::to_vec(&targets).map_err(|e| {
@@ -1207,7 +1304,9 @@ impl Operation for ListRemoteTargetHandler {
     }
 }
 
+/// 移除远程目标处理器
 pub struct RemoveRemoteTargetHandler {}
+
 #[async_trait::async_trait]
 impl Operation for RemoveRemoteTargetHandler {
     async fn call(&self, req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
@@ -1228,6 +1327,7 @@ impl Operation for RemoveRemoteTargetHandler {
             return Err(S3Error::with_message(S3ErrorCode::InternalError, "Not initialized".to_string()));
         };
 
+        // 验证存储桶存在
         if let Err(err) = store.get_bucket_info(bucket, &BucketOptions::default()).await {
             error!("Error fetching bucket info: {:?}", err);
             return Ok(S3Response::new((StatusCode::BAD_REQUEST, Body::from("Invalid bucket".to_string()))));
@@ -1235,11 +1335,13 @@ impl Operation for RemoveRemoteTargetHandler {
 
         let sys = BucketTargetSys::get();
 
+        // 移除目标
         sys.remove_target(bucket, arn_str).await.map_err(|e| {
             error!("Failed to remove target: {}", e);
             S3Error::with_message(S3ErrorCode::InternalError, "Failed to remove target".to_string())
         })?;
 
+        // 更新存储桶元数据
         let targets = sys.list_bucket_targets(bucket).await.map_err(|e| {
             error!("Failed to list bucket targets: {}", e);
             S3Error::with_message(S3ErrorCode::InternalError, "Failed to list bucket targets".to_string())
@@ -1261,12 +1363,12 @@ impl Operation for RemoveRemoteTargetHandler {
     }
 }
 
-/// Real-time data collection function
+/// 实时数据收集函数
 async fn collect_realtime_data_usage(
     info: &mut rustfs_common::data_usage::DataUsageInfo,
     store: Arc<rustfs_ecstore::store::ECStore>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Get bucket list and collect basic statistics
+    // 获取存储桶列表并收集基本统计信息
     let buckets = store.list_bucket(&BucketOptions::default()).await?;
 
     info.buckets_count = buckets.len() as u64;
@@ -1284,11 +1386,11 @@ async fn collect_realtime_data_usage(
     let mut total_size = 0u64;
     let mut total_delete_markers = 0u64;
 
-    // For each bucket, try to get object count
+    // 为每个存储桶尝试获取对象计数
     for bucket_info in buckets {
         let bucket_name = &bucket_info.name;
 
-        // Skip system buckets
+        // 跳过系统存储桶
         if bucket_name.starts_with('.') {
             continue;
         }
@@ -1317,12 +1419,15 @@ async fn collect_realtime_data_usage(
     Ok(())
 }
 
+/// 性能分析处理器
 pub struct ProfileHandler {}
+
 #[async_trait::async_trait]
 impl Operation for ProfileHandler {
     async fn call(&self, req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
         #[cfg(not(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64")))]
         {
+            // 不支持的平台返回错误
             let requested_url = req.uri.to_string();
             let target_os = std::env::consts::OS;
             let target_arch = std::env::consts::ARCH;
@@ -1368,6 +1473,7 @@ impl Operation for ProfileHandler {
                     ))),
                 },
                 "flamegraph" | "svg" => {
+                    // 火焰图格式
                     let freq = get_env_usize(ENV_CPU_FREQ, DEFAULT_CPU_FREQ) as i32;
                     let guard = match pprof::ProfilerGuard::new(freq) {
                         Ok(g) => g,
@@ -1412,7 +1518,9 @@ impl Operation for ProfileHandler {
     }
 }
 
+/// 性能分析状态处理器
 pub struct ProfileStatusHandler {}
+
 #[async_trait::async_trait]
 impl Operation for ProfileStatusHandler {
     async fn call(&self, _req: S3Request<Body>, _params: Params<'_, '_>) -> S3Result<S3Response<(StatusCode, Body)>> {
@@ -1478,7 +1586,7 @@ mod tests {
 
     #[test]
     fn test_account_info_structure() {
-        // Test AccountInfo struct creation and serialization
+        // 测试AccountInfo结构体创建和序列化
         let account_info = AccountInfo {
             account_name: "test-account".to_string(),
             server: BackendInfo::default(),
@@ -1487,14 +1595,14 @@ mod tests {
 
         assert_eq!(account_info.account_name, "test-account");
 
-        // Test JSON serialization (PascalCase rename)
+        // 测试JSON序列化（PascalCase重命名）
         let json_str = serde_json::to_string(&account_info).unwrap();
         assert!(json_str.contains("AccountName"));
     }
 
     #[test]
     fn test_account_info_default() {
-        // Test that AccountInfo can be created with default values
+        // 测试AccountInfo可以使用默认值创建
         let default_info = AccountInfo::default();
 
         assert!(default_info.account_name.is_empty());
@@ -1502,7 +1610,7 @@ mod tests {
 
     #[test]
     fn test_handler_struct_creation() {
-        // Test that handler structs can be created
+        // 测试处理器结构体可以被创建
         let _account_handler = AccountInfoHandler {};
         let _service_handler = ServiceHandle {};
         let _server_info_handler = ServerInfoHandler {};
@@ -1517,13 +1625,13 @@ mod tests {
         let _list_remote_target_handler = ListRemoteTargetHandler {};
         let _remove_remote_target_handler = RemoveRemoteTargetHandler {};
 
-        // Just verify they can be created without panicking
-        // Test passes if we reach this point without panicking
+        // 只需验证它们可以被创建而不panic
+        // 如果到达此点而没有panic，测试通过
     }
 
     #[test]
     fn test_heal_opts_serialization() {
-        // Test that HealOpts can be properly deserialized
+        // 测试HealOpts可以被正确反序列化
         let heal_opts_json = json!({
             "recursive": true,
             "dryRun": false,
@@ -1543,7 +1651,7 @@ mod tests {
 
     #[test]
     fn test_heal_opts_url_encoding() {
-        // Test URL encoding/decoding of HealOpts
+        // 测试HealOpts的URL编码/解码
         let opts = HealOpts {
             recursive: true,
             dry_run: false,
@@ -1560,13 +1668,13 @@ mod tests {
         assert!(encoded.contains("recursive=true"));
         assert!(encoded.contains("remove=true"));
 
-        // Test round-trip
+        // 测试往返转换
         let decoded: HealOpts = serde_urlencoded::from_str(&encoded).unwrap();
         assert_eq!(decoded.recursive, opts.recursive);
         assert_eq!(decoded.scan_mode, opts.scan_mode);
     }
 
-    #[ignore] // FIXME: failed in github actions - keeping original test
+    #[ignore] // FIXME: 在GitHub Actions中失败 - 保留原始测试
     #[test]
     fn test_decode() {
         let b = b"{\"recursive\":false,\"dryRun\":false,\"remove\":false,\"recreate\":false,\"scanMode\":1,\"updateParity\":false,\"nolock\":false}";
@@ -1574,14 +1682,13 @@ mod tests {
         debug!("Parsed HealOpts: {:?}", s);
     }
 
-    // Note: Testing the actual async handler implementations requires:
-    // 1. S3Request setup with proper headers, URI, and credentials
-    // 2. Global object store initialization
-    // 3. IAM system initialization
-    // 4. Mock or real backend services
-    // 5. Authentication and authorization setup
+    // 注意：测试实际的异步处理器实现需要：
+    // 1. 具有适当头部、URI和凭证的S3Request设置
+    // 2. 全局对象存储初始化
+    // 3. IAM系统初始化
+    // 4. 模拟或真实的后端服务
+    // 5. 身份验证和授权设置
     //
-    // These are better suited for integration tests with proper test infrastructure.
-    // The current tests focus on data structures and basic functionality that can be
-    // tested in isolation without complex dependencies.
+    // 这些更适合使用适当的测试基础设施进行集成测试。
+    // 当前的测试专注于可以在没有复杂依赖的情况下单独测试的数据结构和基本功能。
 }

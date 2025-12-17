@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// 导入必要的模块和库
 use crate::config::build;
 use crate::license::get_license;
 use axum::{
@@ -45,30 +46,34 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, warn};
 
+// 控制台路径前缀
 pub(crate) const CONSOLE_PREFIX: &str = "/rustfs/console";
+// 管理API路径前缀
 const RUSTFS_ADMIN_PREFIX: &str = "/rustfs/admin/v3";
 
+// 使用rust-embed嵌入静态文件到二进制中
 #[derive(RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/static"]
+#[folder = "$CARGO_MANIFEST_DIR/static"]  // 从static文件夹嵌入文件
 struct StaticFiles;
 
-/// Static file handler
+/// 静态文件处理器
 ///
-/// Serves static files embedded in the binary using rust-embed.
-/// If the requested file is not found, it serves index.html as a fallback.
-/// If index.html is also not found, it returns a 404 Not Found response.
+/// 使用rust-embed提供嵌入在二进制中的静态文件。
+/// 如果请求的文件未找到，则回退到index.html。
+/// 如果index.html也未找到，返回404 Not Found响应。
 ///
-/// # Arguments:
-/// - `uri`: The request URI.
+/// # 参数:
+/// - `uri`: 请求的URI。
 ///
-/// # Returns:
-/// - An `impl IntoResponse` containing the static file content or a 404 response.
-///
+/// # 返回:
+/// - 包含静态文件内容或404响应的 `impl IntoResponse`。
 async fn static_handler(uri: Uri) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/');
     if path.is_empty() {
-        path = "index.html"
+        path = "index.html"  // 默认返回index.html
     }
+    
+    // 尝试获取请求的文件
     if let Some(file) = StaticFiles::get(path) {
         let mime_type = from_path(path).first_or_octet_stream();
         Response::builder()
@@ -77,6 +82,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
             .body(Body::from(file.data))
             .unwrap()
     } else if let Some(file) = StaticFiles::get("index.html") {
+        // 文件未找到，返回index.html作为单页应用的回退
         let mime_type = from_path("index.html").first_or_octet_stream();
         Response::builder()
             .status(StatusCode::OK)
@@ -84,6 +90,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
             .body(Body::from(file.data))
             .unwrap()
     } else {
+        // index.html也未找到，返回404
         Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::from(" 404 Not Found \n RustFS "))
@@ -91,18 +98,20 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
     }
 }
 
+/// 控制台配置结构体
 #[derive(Debug, Serialize, Clone)]
 pub(crate) struct Config {
-    #[serde(skip)]
+    #[serde(skip)]  // 序列化时跳过端口号
     port: u16,
-    api: Api,
-    s3: S3,
-    release: Release,
-    license: License,
-    doc: String,
+    api: Api,      // API配置
+    s3: S3,        // S3配置
+    release: Release,  // 发布信息
+    license: License,  // 许可证信息
+    doc: String,   // 文档链接
 }
 
 impl Config {
+    /// 创建新的配置实例
     fn new(local_ip: IpAddr, port: u16, version: &str, date: &str) -> Self {
         Config {
             port,
@@ -111,7 +120,7 @@ impl Config {
             },
             s3: S3 {
                 endpoint: format!("http://{local_ip}:{port}"),
-                region: "cn-east-1".to_owned(),
+                region: "cn-east-1".to_owned(),  // 默认区域
             },
             release: Release {
                 version: version.to_string(),
@@ -125,10 +134,12 @@ impl Config {
         }
     }
 
+    /// 将配置转换为JSON字符串
     fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
 
+    /// 获取版本信息字符串
     #[allow(dead_code)]
     pub(crate) fn version_info(&self) -> String {
         format!(
@@ -140,52 +151,61 @@ impl Config {
         )
     }
 
+    /// 获取版本号
     #[allow(dead_code)]
     pub(crate) fn version(&self) -> String {
         self.release.version.clone()
     }
 
+    /// 获取许可证信息
     #[allow(dead_code)]
     pub(crate) fn license(&self) -> String {
         format!("{} {}", self.license.name.clone(), self.license.url.clone())
     }
 
+    /// 获取文档链接
     #[allow(dead_code)]
     pub(crate) fn doc(&self) -> String {
         self.doc.clone()
     }
 }
 
+/// API配置结构体
 #[derive(Debug, Serialize, Clone)]
 struct Api {
-    #[serde(rename = "baseURL")]
+    #[serde(rename = "baseURL")]  // JSON序列化时重命名字段
     base_url: String,
 }
 
+/// S3配置结构体
 #[derive(Debug, Serialize, Clone)]
 struct S3 {
-    endpoint: String,
-    region: String,
+    endpoint: String,  // S3端点URL
+    region: String,    // 区域
 }
 
+/// 发布信息结构体
 #[derive(Debug, Serialize, Clone)]
 struct Release {
-    version: String,
-    date: String,
+    version: String,  // 版本号
+    date: String,     // 发布日期
 }
 
+/// 许可证信息结构体
 #[derive(Debug, Serialize, Clone)]
 struct License {
-    name: String,
-    url: String,
+    name: String,  // 许可证名称
+    url: String,   // 许可证URL
 }
 
-/// Global console configuration
+/// 全局控制台配置（线程安全的一次性初始化）
 static CONSOLE_CONFIG: OnceLock<Config> = OnceLock::new();
 
+/// 初始化控制台配置
 #[allow(clippy::const_is_empty)]
 pub(crate) fn init_console_cfg(local_ip: IpAddr, port: u16) {
     CONSOLE_CONFIG.get_or_init(|| {
+        // 确定版本号（优先使用标签，然后是提交哈希，最后是包版本）
         let ver = {
             if !build::TAG.is_empty() {
                 build::TAG.to_string()
@@ -196,15 +216,16 @@ pub(crate) fn init_console_cfg(local_ip: IpAddr, port: u16) {
             }
         };
 
+        // 创建配置实例
         Config::new(local_ip, port, ver.as_str(), build::COMMIT_DATE_3339)
     });
 }
 
-/// License handler
-/// Returns the current license information of the console.
+/// 许可证处理器
+/// 返回控制台的当前许可证信息。
 ///
-/// # Returns:
-/// - 200 OK with JSON body containing license details.
+/// # 返回:
+/// - 200 OK，包含许可证详情的JSON响应。
 #[instrument]
 async fn license_handler() -> impl IntoResponse {
     let license = get_license().unwrap_or_default();
@@ -216,7 +237,7 @@ async fn license_handler() -> impl IntoResponse {
         .unwrap()
 }
 
-/// Check if the given IP address is a private IP
+/// 检查给定的IP地址是否为私有IP
 fn _is_private_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
@@ -228,16 +249,16 @@ fn _is_private_ip(ip: IpAddr) -> bool {
                 // 192.168.0.0/16
                 (octets[0] == 192 && octets[1] == 168)
         }
-        IpAddr::V6(_) => false,
+        IpAddr::V6(_) => false,  // IPv6暂不处理
     }
 }
 
-/// Version handler
-/// Returns the current version information of the console.
+/// 版本处理器
+/// 返回控制台的当前版本信息。
 ///
-/// # Returns:
-/// - 200 OK with JSON body containing version details if configuration is initialized.
-/// - 500 Internal Server Error if configuration is not initialized.
+/// # 返回:
+/// - 200 OK：包含版本详情的JSON响应（如果配置已初始化）
+/// - 500 Internal Server Error：如果配置未初始化
 #[instrument]
 async fn version_handler() -> impl IntoResponse {
     match CONSOLE_CONFIG.get() {
@@ -260,41 +281,50 @@ async fn version_handler() -> impl IntoResponse {
     }
 }
 
-/// Configuration handler
-/// Returns the current console configuration in JSON format.
-/// The configuration is dynamically adjusted based on the request's host and scheme.
+/// 配置处理器
+/// 返回当前控制台配置的JSON格式。
+/// 配置会根据请求的主机和协议动态调整。
 ///
-/// # Arguments:
-/// - `uri`: The request URI.
-/// - `Host(host)`: The host extracted from the request.
-/// - `headers`: The request headers.
+/// # 参数:
+/// - `uri`: 请求URI
+/// - `Host(host)`: 从请求中提取的主机
+/// - `headers`: 请求头
 ///
-/// # Returns:
-/// - 200 OK with JSON body containing the console configuration if initialized.
-/// - 500 Internal Server Error if configuration is not initialized.
+/// # 返回:
+/// - 200 OK：包含控制台配置的JSON响应（如果配置已初始化）
+/// - 500 Internal Server Error：如果配置未初始化
 #[instrument(fields(host))]
 async fn config_handler(uri: Uri, Host(host): Host, headers: HeaderMap) -> impl IntoResponse {
-    // Get the scheme from the headers or use the URI scheme
+    // 从头信息或URI中获取协议方案
     let scheme = headers
         .get(HeaderName::from_static("x-forwarded-proto"))
         .and_then(|value| value.to_str().ok())
         .unwrap_or_else(|| uri.scheme().map(|s| s.as_str()).unwrap_or("http"));
 
     let raw_host = uri.host().unwrap_or(host.as_str());
+    
+    // 格式化主机地址（处理IPv6的特殊情况）
     let host_for_url = if let Ok(socket_addr) = raw_host.parse::<SocketAddr>() {
-        // Successfully parsed, it's in IP:Port format.
-        // For IPv6, we need to enclose it in brackets to form a valid URL.
+        // 成功解析为IP:端口格式
         let ip = socket_addr.ip();
-        if ip.is_ipv6() { format!("[{ip}]") } else { format!("{ip}") }
+        if ip.is_ipv6() { 
+            format!("[{ip}]")  // IPv6需要方括号
+        } else { 
+            format!("{ip}") 
+        }
     } else if let Ok(ip) = raw_host.parse::<IpAddr>() {
-        // Pure IP (no ports)
-        if ip.is_ipv6() { format!("[{ip}]") } else { ip.to_string() }
+        // 纯IP地址（无端口）
+        if ip.is_ipv6() { 
+            format!("[{ip}]") 
+        } else { 
+            ip.to_string() 
+        }
     } else {
-        // The domain name may not be able to resolve directly to IP, remove the port
+        // 域名（可能无法直接解析为IP），移除端口部分
         raw_host.split(':').next().unwrap_or(raw_host).to_string()
     };
 
-    // Make a copy of the current configuration
+    // 复制当前配置
     let mut cfg = match CONSOLE_CONFIG.get() {
         Some(cfg) => cfg.clone(),
         None => {
@@ -306,6 +336,7 @@ async fn config_handler(uri: Uri, Host(host): Host, headers: HeaderMap) -> impl 
         }
     };
 
+    // 动态更新配置中的URL
     let url = format!("{}://{}:{}", scheme, host_for_url, cfg.port);
     cfg.api.base_url = format!("{url}{RUSTFS_ADMIN_PREFIX}");
     cfg.s3.endpoint = url;
@@ -317,15 +348,15 @@ async fn config_handler(uri: Uri, Host(host): Host, headers: HeaderMap) -> impl 
         .unwrap()
 }
 
-/// Console access logging middleware
-/// Logs each console access with method, URI, status code, and duration.
+/// 控制台访问日志中间件
+/// 记录每个控制台访问的方法、URI、状态码和持续时间。
 ///
-/// # Arguments:
-/// - `req`: The incoming request.
-/// - `next`: The next middleware or handler in the chain.
+/// # 参数:
+/// - `req`: 传入的请求
+/// - `next`: 链中的下一个中间件或处理器
 ///
-/// # Returns:
-/// - The response from the next middleware or handler.
+/// # 返回:
+/// - 来自下一个中间件或处理器的响应
 async fn console_logging_middleware(req: Request, next: middleware::Next) -> Response {
     let method = req.method().clone();
     let uri = req.uri().clone();
@@ -333,6 +364,7 @@ async fn console_logging_middleware(req: Request, next: middleware::Next) -> Res
     let response = next.run(req).await;
     let duration = start.elapsed();
 
+    // 记录访问日志
     info!(
         target: "rustfs::console::access",
         method = %method,
@@ -345,7 +377,7 @@ async fn console_logging_middleware(req: Request, next: middleware::Next) -> Res
     response
 }
 
-/// Setup TLS configuration for console using axum-server, following endpoint TLS implementation logic
+/// 为控制台设置TLS配置，使用axum-server，遵循端点TLS实现逻辑
 #[instrument(skip(tls_path))]
 async fn _setup_console_tls_config(tls_path: Option<&String>) -> Result<Option<RustlsConfig>> {
     let tls_path = match tls_path {
@@ -356,6 +388,7 @@ async fn _setup_console_tls_config(tls_path: Option<&String>) -> Result<Option<R
         }
     };
 
+    // 检查TLS路径是否存在
     if tokio::fs::metadata(tls_path).await.is_err() {
         debug!("TLS path does not exist, console starting with HTTP");
         return Ok(None);
@@ -363,10 +396,10 @@ async fn _setup_console_tls_config(tls_path: Option<&String>) -> Result<Option<R
 
     debug!("Found TLS directory for console, checking for certificates");
 
-    // Make sure to use a modern encryption suite
+    // 使用现代加密套件
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // 1. Attempt to load all certificates in the directory (multi-certificate support, for SNI)
+    // 1. 尝试加载目录中的所有证书（多证书支持，用于SNI）
     if let Ok(cert_key_pairs) = rustfs_utils::load_all_certs_from_directory(tls_path) {
         if !cert_key_pairs.is_empty() {
             debug!(
@@ -374,18 +407,18 @@ async fn _setup_console_tls_config(tls_path: Option<&String>) -> Result<Option<R
                 cert_key_pairs.len()
             );
 
-            // Create an SNI-enabled certificate resolver
+            // 创建支持SNI的证书解析器
             let resolver = rustfs_utils::create_multi_cert_resolver(cert_key_pairs)?;
 
-            // Configure the server to enable SNI support
+            // 配置服务器以启用SNI支持
             let mut server_config = ServerConfig::builder()
                 .with_no_client_auth()
                 .with_cert_resolver(Arc::new(resolver));
 
-            // Configure ALPN protocol priority
+            // 配置ALPN协议优先级
             server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
 
-            // Log SNI requests
+            // 记录SNI请求
             if rustfs_utils::tls_key_log() {
                 server_config.key_log = Arc::new(rustls::KeyLogFile::new());
             }
@@ -395,7 +428,7 @@ async fn _setup_console_tls_config(tls_path: Option<&String>) -> Result<Option<R
         }
     }
 
-    // 2. Revert to the traditional single-certificate mode
+    // 2. 回退到传统的单证书模式
     let key_path = format!("{tls_path}/{RUSTFS_TLS_KEY}");
     let cert_path = format!("{tls_path}/{RUSTFS_TLS_CERT}");
     if tokio::try_join!(tokio::fs::metadata(&key_path), tokio::fs::metadata(&cert_path)).is_ok() {
@@ -417,16 +450,16 @@ async fn _setup_console_tls_config(tls_path: Option<&String>) -> Result<Option<R
     Ok(None)
 }
 
-/// Get console configuration from environment variables
-/// Returns a tuple containing console configuration values from environment variables.
+/// 从环境变量获取控制台配置
+/// 返回包含环境变量中控制台配置值的元组。
 ///
-/// # Returns:
-/// - rate_limit_enable: bool indicating if rate limiting is enabled.
-/// - rate_limit_rpm: u32 indicating the rate limit in requests per minute.
-/// - auth_timeout: u64 indicating the authentication timeout in seconds.
-/// - cors_allowed_origins: String containing allowed CORS origins.
-///
+/// # 返回:
+/// - rate_limit_enable: 表示是否启用速率限制的布尔值
+/// - rate_limit_rpm: 表示每分钟请求限制次数的u32
+/// - auth_timeout: 表示认证超时秒数的u64
+/// - cors_allowed_origins: 包含允许的CORS来源的字符串
 fn get_console_config_from_env() -> (bool, u32, u64, String) {
+    // 从环境变量读取配置，使用默认值
     let rate_limit_enable = std::env::var(rustfs_config::ENV_CONSOLE_RATE_LIMIT_ENABLE)
         .unwrap_or_else(|_| rustfs_config::DEFAULT_CONSOLE_RATE_LIMIT_ENABLE.to_string())
         .parse::<bool>()
@@ -441,6 +474,7 @@ fn get_console_config_from_env() -> (bool, u32, u64, String) {
         .unwrap_or_else(|_| rustfs_config::DEFAULT_CONSOLE_AUTH_TIMEOUT.to_string())
         .parse::<u64>()
         .unwrap_or(rustfs_config::DEFAULT_CONSOLE_AUTH_TIMEOUT);
+        
     let cors_allowed_origins = std::env::var(rustfs_config::ENV_CONSOLE_CORS_ALLOWED_ORIGINS)
         .unwrap_or_else(|_| rustfs_config::DEFAULT_CONSOLE_CORS_ALLOWED_ORIGINS.to_string())
         .parse::<String>()
@@ -449,27 +483,27 @@ fn get_console_config_from_env() -> (bool, u32, u64, String) {
     (rate_limit_enable, rate_limit_rpm, auth_timeout, cors_allowed_origins)
 }
 
-/// Check if the given path is for console access
+/// 检查给定路径是否为控制台访问路径
 ///
-/// # Arguments:
-/// - `path`: The request path.
+/// # 参数:
+/// - `path`: 请求路径
 ///
-/// # Returns:
-/// - `true` if the path is for console access, `false` otherwise.
+/// # 返回:
+/// - 如果路径是控制台访问路径则为`true`，否则为`false`
 pub fn is_console_path(path: &str) -> bool {
     path == "/favicon.ico" || path.starts_with(CONSOLE_PREFIX)
 }
 
-/// Setup comprehensive middleware stack with tower-http features
+/// 使用tower-http功能设置全面的中间件堆栈
 ///
-/// # Arguments:
-/// - `cors_layer`: The CORS layer to apply.
-/// - `rate_limit_enable`: bool indicating if rate limiting is enabled.
-/// - `rate_limit_rpm`: u32 indicating the rate limit in requests per minute.
-/// - `auth_timeout`: u64 indicating the authentication timeout in seconds.
+/// # 参数:
+/// - `cors_layer`: 要应用的CORS层
+/// - `rate_limit_enable`: 表示是否启用速率限制的布尔值
+/// - `rate_limit_rpm`: 表示每分钟请求限制次数的u32
+/// - `auth_timeout`: 表示认证超时秒数的u64
 ///
-/// # Returns:
-/// - A `Router` with the configured middleware stack.
+/// # 返回:
+/// - 配置了中间件堆栈的 `Router`
 fn setup_console_middleware_stack(
     cors_layer: CorsLayer,
     rate_limit_enable: bool,
@@ -483,54 +517,52 @@ fn setup_console_middleware_stack(
         .route(&format!("{CONSOLE_PREFIX}/version"), get(version_handler))
         .route(&format!("{CONSOLE_PREFIX}/health"), get(health_check).head(health_check))
         .nest(CONSOLE_PREFIX, Router::new().fallback_service(get(static_handler)))
-        .fallback_service(get(static_handler));
+        .fallback_service(get(static_handler));  // 默认静态文件服务
 
-    // Add comprehensive middleware layers using tower-http features
+    // 使用tower-http功能添加全面的中间件层
     app = app
-        .layer(CatchPanicLayer::new())
-        .layer(TraceLayer::new_for_http())
-        // Compress responses
-        .layer(CompressionLayer::new())
-        .layer(middleware::from_fn(console_logging_middleware))
-        .layer(cors_layer)
-        // Add timeout layer - convert auth_timeout from seconds to Duration
-        .layer(TimeoutLayer::with_status_code(
+        .layer(CatchPanicLayer::new())  // 捕获恐慌
+        .layer(TraceLayer::new_for_http())  // 请求追踪
+        .layer(CompressionLayer::new())  // 响应压缩
+        .layer(middleware::from_fn(console_logging_middleware))  // 控制台日志中间件
+        .layer(cors_layer)  // CORS
+        .layer(TimeoutLayer::with_status_code(  // 超时控制
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(auth_timeout),
         ))
-        // Add request body limit (10MB for console uploads)
-        .layer(RequestBodyLimitLayer::new(5 * 1024 * 1024 * 1024));
+        .layer(RequestBodyLimitLayer::new(5 * 1024 * 1024 * 1024));  // 请求体限制（5GB）
 
-    // Add rate limiting if enabled
+    // 如果启用，添加速率限制
     if rate_limit_enable {
         info!("Console rate limiting enabled: {} requests per minute", rate_limit_rpm);
-        // Note: tower-http doesn't provide a built-in rate limiter, but we have the foundation
-        // For production, you would integrate with a rate limiting service like Redis
-        // For now, we log that it's configured and ready for integration
+        // 注意：tower-http不提供内置的速率限制器，但我们已经有了基础
+        // 生产环境中，您需要与Redis等速率限制服务集成
+        // 目前，我们记录它已配置并准备集成
     }
 
     app
 }
 
-/// Console health check handler with comprehensive health information
+/// 控制台健康检查处理器，包含全面的健康信息
 ///
-/// # Arguments:
-/// - `method`: The HTTP method of the request.
+/// # 参数:
+/// - `method`: 请求的HTTP方法
 ///
-/// # Returns:
-/// - A `Response` containing the health check result.
+/// # 返回:
+/// - 包含健康检查结果的 `Response`
 #[instrument]
 async fn health_check(method: Method) -> Response {
     let builder = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json");
+        
     match method {
-        // GET: Returns complete JSON
+        // GET: 返回完整的JSON
         Method::GET => {
             let mut health_status = "ok";
             let mut details = json!({});
 
-            // Check storage backend health
+            // 检查存储后端健康状态
             if let Some(_store) = rustfs_ecstore::new_object_layer_fn() {
                 details["storage"] = json!({"status": "connected"});
             } else {
@@ -538,7 +570,7 @@ async fn health_check(method: Method) -> Response {
                 details["storage"] = json!({"status": "disconnected"});
             }
 
-            // Check IAM system health
+            // 检查IAM系统健康状态
             match rustfs_iam::get() {
                 Ok(_) => {
                     details["iam"] = json!({"status": "connected"});
@@ -561,16 +593,17 @@ async fn health_check(method: Method) -> Response {
                     .as_secs()
             });
 
-            // Return a minimal JSON when serialization fails to avoid panic
+            // 当序列化失败时返回最小化的JSON以避免恐慌
             let body_str = serde_json::to_string(&body_json).unwrap_or_else(|e| {
                 error!(
                     target: "rustfs::console::health",
                     "failed to serialize health check body: {}",
                     e
                 );
-                // Simplified back-up JSON
+                // 简化的备用JSON
                 "{\"status\":\"error\",\"service\":\"rustfs-console\"}".to_string()
             });
+            
             builder.body(Body::from(body_str)).unwrap_or_else(|e| {
                 error!(
                     target: "rustfs::console::health",
@@ -584,7 +617,7 @@ async fn health_check(method: Method) -> Response {
             })
         }
 
-        // HEAD: Only status + headers are returned, body is empty
+        // HEAD: 只返回状态码+头部，无响应体
         Method::HEAD => builder.body(Body::empty()).unwrap_or_else(|e| {
             error!(
                 target: "rustfs::console::health",
@@ -604,7 +637,7 @@ async fn health_check(method: Method) -> Response {
                 })
         }),
 
-        // Other methods: 405
+        // 其他方法：405 Method Not Allowed
         _ => Response::builder()
             .status(StatusCode::METHOD_NOT_ALLOWED)
             .header("allow", "GET, HEAD")
@@ -620,13 +653,13 @@ async fn health_check(method: Method) -> Response {
     }
 }
 
-/// Parse CORS allowed origins from configuration
+/// 从配置中解析CORS允许的来源
 ///
-/// # Arguments:
-/// - `origins`: An optional reference to a string containing allowed origins.
+/// # 参数:
+/// - `origins`: 包含允许来源的可选字符串引用
 ///
-/// # Returns:
-/// - A `CorsLayer` configured with the specified origins.
+/// # 返回:
+/// - 配置了指定来源的 `CorsLayer`
 pub fn parse_cors_origins(origins: Option<&String>) -> CorsLayer {
     let cors_layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
@@ -640,7 +673,7 @@ pub fn parse_cors_origins(origins: Option<&String>) -> CorsLayer {
                 warn!("Empty CORS origins provided, using permissive CORS");
                 cors_layer.allow_origin(Any).expose_headers(Any)
             } else {
-                // Parse origins with proper error handling
+                // 使用适当的错误处理解析来源
                 let mut valid_origins = Vec::new();
                 for origin in origins {
                     match origin.parse::<HeaderValue>() {
@@ -669,21 +702,24 @@ pub fn parse_cors_origins(origins: Option<&String>) -> CorsLayer {
     }
 }
 
-/// Create and configure the console server router
+/// 创建和配置控制台服务器路由器
 ///
-/// # Returns:
-/// - A `Router` configured for the console server with middleware.
+/// # 返回:
+/// - 配置了中间件的控制台服务器 `Router`
 pub(crate) fn make_console_server() -> Router {
+    // 从环境变量获取配置
     let (rate_limit_enable, rate_limit_rpm, auth_timeout, cors_allowed_origins) = get_console_config_from_env();
-    // String to Option<&String>
+    
+    // 将字符串转换为Option<&String>
     let cors_allowed_origins = if cors_allowed_origins.is_empty() {
         None
     } else {
         Some(&cors_allowed_origins)
     };
-    // Configure CORS based on settings
+    
+    // 基于设置配置CORS
     let cors_layer = parse_cors_origins(cors_allowed_origins);
 
-    // Build console router with enhanced middleware stack using tower-http features
+    // 使用tower-http功能构建具有增强中间件堆栈的控制台路由器
     setup_console_middleware_stack(cors_layer, rate_limit_enable, rate_limit_rpm, auth_timeout)
 }
